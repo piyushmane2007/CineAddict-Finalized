@@ -1,0 +1,6 @@
+{
+  "name": "CineAddict",
+  "description": "Modern movie platform frontend for CineAddict Flask REST API",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

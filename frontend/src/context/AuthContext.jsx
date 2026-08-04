@@ -1,29 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { apiService, getBackendUrl, setBackendUrl } from '../services/api';
 const AuthContext = createContext(undefined);
-// Helper to determine active user storage scope key
-const getUserKey = (u) => {
-    if (!u)
-        return 'guest';
-    return String(u.id || u.email || u.username || 'user');
-};
-const getScopedCollection = (key, userKey) => {
-    try {
-        const stored = localStorage.getItem(`cineaddict_${key}_${userKey}`);
-        if (stored)
-            return JSON.parse(stored);
-        // Legacy fallback for initial migration from un-scoped keys
-        if (userKey !== 'guest') {
-            const legacy = localStorage.getItem(`cineaddict_${key}`);
-            if (legacy)
-                return JSON.parse(legacy);
-        }
-    }
-    catch {
-        // Ignore JSON errors
-    }
-    return [];
-};
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(() => {
         try {
@@ -38,29 +15,26 @@ export const AuthProvider = ({ children }) => {
     const [backendUrl, setBackendUrlState] = useState(getBackendUrl());
     const [isBackendConnected, setIsBackendConnected] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
-    // App features local + backend synced states (isolated per user)
-    const initialUserKey = getUserKey(user);
-    const [favorites, setFavorites] = useState(() => getScopedCollection('favorites', initialUserKey));
-    const [watchlist, setWatchlist] = useState(() => getScopedCollection('watchlist', initialUserKey));
-    const [recentlyViewed, setRecentlyViewed] = useState(() => getScopedCollection('recently_viewed', initialUserKey));
-    const [searchHistory, setSearchHistory] = useState(() => getScopedCollection('search_history', initialUserKey));
-    // Sync state to user-scoped local storage for client UI persistence
-    useEffect(() => {
-        const currentKey = getUserKey(user);
-        localStorage.setItem(`cineaddict_favorites_${currentKey}`, JSON.stringify(favorites));
-    }, [favorites, user]);
-    useEffect(() => {
-        const currentKey = getUserKey(user);
-        localStorage.setItem(`cineaddict_watchlist_${currentKey}`, JSON.stringify(watchlist));
-    }, [watchlist, user]);
-    useEffect(() => {
-        const currentKey = getUserKey(user);
-        localStorage.setItem(`cineaddict_recently_viewed_${currentKey}`, JSON.stringify(recentlyViewed));
-    }, [recentlyViewed, user]);
-    useEffect(() => {
-        const currentKey = getUserKey(user);
-        localStorage.setItem(`cineaddict_search_history_${currentKey}`, JSON.stringify(searchHistory));
-    }, [searchHistory, user]);
+    // Favorites/Watchlist/RecentlyViewed/SearchHistory are NEVER cached in
+    // localStorage and are NEVER seeded from cached frontend data. They always
+    // start empty and, for an authenticated user, are populated exclusively
+    // from the backend (see refreshUserData / resetCollections below). Guests
+    // and brand-new users simply never have anything fetched for them, so
+    // their collections stay empty.
+    const [favorites, setFavorites] = useState([]);
+    const [watchlist, setWatchlist] = useState([]);
+    const [recentlyViewed, setRecentlyViewed] = useState([]);
+    const [searchHistory, setSearchHistory] = useState([]);
+    // Clears all in-memory collections. Used whenever the active identity
+    // changes (login, register, logout, app init) so no stale/previous
+    // user's data can ever leak into the new session before a fresh
+    // backend fetch (or, for guests, permanently).
+    const resetCollections = () => {
+        setFavorites([]);
+        setWatchlist([]);
+        setRecentlyViewed([]);
+        setSearchHistory([]);
+    };
     // Ping backend to check connection
     const checkBackendConnection = async () => {
         try {
@@ -80,7 +54,13 @@ export const AuthProvider = ({ children }) => {
     };
     // Sync user data with backend
     const refreshUserData = async () => {
-        if (!token)
+        // `token` here can be a stale closure value if this is called in the
+        // same tick as setToken(...) (e.g. right after login/register), since
+        // the state update hasn't been applied to this render's closure yet.
+        // Fall back to reading the just-persisted value directly so the
+        // backend fetch always actually runs when there IS a valid session.
+        const activeToken = token || localStorage.getItem('cineaddict_token');
+        if (!activeToken)
             return;
         try {
             const profile = await apiService.getProfile();
@@ -93,6 +73,11 @@ export const AuthProvider = ({ children }) => {
                 apiService.getRecentlyViewed(),
                 apiService.getSearchHistory()
             ]);
+            // Every collection is fully REPLACED with what the backend just
+            // returned for this user - never merged with whatever was in
+            // state before. If a call fails, the collection is set to empty
+            // rather than left holding a previous (possibly different
+            // user's) value.
             if (favs.status === 'fulfilled' && Array.isArray(favs.value)) {
                 const normalizedFavs = favs.value.map((f) => ({
                     ...f,
@@ -101,6 +86,9 @@ export const AuthProvider = ({ children }) => {
                     poster_path: f.poster_url || f.poster_path,
                 }));
                 setFavorites(normalizedFavs);
+            }
+            else {
+                setFavorites([]);
             }
             if (wl.status === 'fulfilled' && Array.isArray(wl.value)) {
                 const normalizedWl = wl.value.map((w) => ({
@@ -111,6 +99,9 @@ export const AuthProvider = ({ children }) => {
                 }));
                 setWatchlist(normalizedWl);
             }
+            else {
+                setWatchlist([]);
+            }
             if (rv.status === 'fulfilled' && Array.isArray(rv.value)) {
                 const normalizedRv = rv.value.map((r) => ({
                     ...r,
@@ -120,6 +111,9 @@ export const AuthProvider = ({ children }) => {
                 }));
                 setRecentlyViewed(normalizedRv);
             }
+            else {
+                setRecentlyViewed([]);
+            }
             if (sh.status === 'fulfilled' && Array.isArray(sh.value)) {
                 const normalizedSh = sh.value.map((s, idx) => ({
                     id: s.id || idx,
@@ -128,6 +122,9 @@ export const AuthProvider = ({ children }) => {
                     count: 1,
                 }));
                 setSearchHistory(normalizedSh);
+            }
+            else {
+                setSearchHistory([]);
             }
         }
         catch (err) {
@@ -146,17 +143,20 @@ export const AuthProvider = ({ children }) => {
                     try {
                         const parsedUser = JSON.parse(storedUser);
                         setUser(parsedUser);
-                        const uKey = getUserKey(parsedUser);
-                        setFavorites(getScopedCollection('favorites', uKey));
-                        setWatchlist(getScopedCollection('watchlist', uKey));
-                        setRecentlyViewed(getScopedCollection('recently_viewed', uKey));
-                        setSearchHistory(getScopedCollection('search_history', uKey));
                     }
                     catch {
                         setUser(null);
                     }
                 }
+                // Collections are never restored from localStorage. Start
+                // clean and let refreshUserData populate them straight from
+                // the backend for this user.
+                resetCollections();
                 await refreshUserData();
+            }
+            else {
+                // No session -> guest. Guests always have empty collections.
+                resetCollections();
             }
             setIsLoading(false);
         };
@@ -166,36 +166,32 @@ export const AuthProvider = ({ children }) => {
         const response = await apiService.login(email, pass);
         const authToken = response.token || response.access_token || response.jwt;
         const userData = response.user || { email, username: email.split('@')[0], id: Date.now() };
-        const newKey = getUserKey(userData);
         if (authToken) {
             localStorage.setItem('cineaddict_token', authToken);
             setToken(authToken);
         }
         localStorage.setItem('cineaddict_user', JSON.stringify(userData));
         setUser(userData);
-        // Instantly switch state to newly logged in user scope
-        setFavorites(getScopedCollection('favorites', newKey));
-        setWatchlist(getScopedCollection('watchlist', newKey));
-        setRecentlyViewed(getScopedCollection('recently_viewed', newKey));
-        setSearchHistory(getScopedCollection('search_history', newKey));
+        // Wipe whatever was in memory (e.g. guest's empty state, or a
+        // previous user's data) before pulling this user's real collections
+        // from the backend. Never reuse cached frontend data here.
+        resetCollections();
         await refreshUserData();
     };
     const register = async (username, email, pass) => {
         const response = await apiService.register(username, email, pass);
         const authToken = response.token || response.access_token;
         const userData = response.user || { username, email, id: Date.now() };
-        const newKey = getUserKey(userData);
         if (authToken) {
             localStorage.setItem('cineaddict_token', authToken);
             setToken(authToken);
         }
         localStorage.setItem('cineaddict_user', JSON.stringify(userData));
         setUser(userData);
-        // Instantly switch state to newly registered user scope
-        setFavorites(getScopedCollection('favorites', newKey));
-        setWatchlist(getScopedCollection('watchlist', newKey));
-        setRecentlyViewed(getScopedCollection('recently_viewed', newKey));
-        setSearchHistory(getScopedCollection('search_history', newKey));
+        // A brand-new account has nothing yet. Reset locally and fetch from
+        // the backend (which will correctly return empty collections for a
+        // new user_id) rather than ever reusing any previous local state.
+        resetCollections();
         await refreshUserData();
     };
     const logout = () => {
@@ -203,11 +199,9 @@ export const AuthProvider = ({ children }) => {
         localStorage.removeItem('cineaddict_user');
         setToken(null);
         setUser(null);
-        // Reset user state to guest scope
-        setFavorites(getScopedCollection('favorites', 'guest'));
-        setWatchlist(getScopedCollection('watchlist', 'guest'));
-        setRecentlyViewed(getScopedCollection('recently_viewed', 'guest'));
-        setSearchHistory(getScopedCollection('search_history', 'guest'));
+        // Guest always starts (and stays) with empty collections - nothing
+        // is fetched or restored for a guest.
+        resetCollections();
     };
     const isFavorite = (movieId) => {
         return favorites.some((m) => String(m.id) === String(movieId));

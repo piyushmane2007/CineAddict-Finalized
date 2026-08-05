@@ -1,10 +1,15 @@
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import (
+    create_access_token,
+    jwt_required,
+    get_jwt_identity
+)
 
 from services.auth_service import register_user, login_user
+from models.user import User
 
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+auth_bp = Blueprint("auth", __name__)
 
-auth_bp = Blueprint("auth", __name__) 
 
 @auth_bp.route("/register", methods=["POST"])
 def register():
@@ -12,19 +17,20 @@ def register():
     data = request.get_json()
 
     user = register_user(
-        username= data["username"],
+        username=data["username"],
         email=data["email"],
         password=data["password"]
-    ) 
+    )
 
-    if user is None : 
+    if user is None:
         return jsonify({
-            "Error":"Email already exists"
-        }),409 
-    
+            "error": "Email already exists"
+        }), 409
+
     return jsonify({
-        "message":"User registered successfully"
-    }),201 
+        "message": "User registered successfully"
+    }), 201
+
 
 @auth_bp.route("/login", methods=["POST"])
 def login():
@@ -45,16 +51,30 @@ def login():
 
     return jsonify({
         "message": "Login successful",
-        "access_token": access_token
+        "access_token": access_token,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email
+        }
     }), 200
 
-@auth_bp.route("/profile", methods = ["GET"])
+
+@auth_bp.route("/profile", methods=["GET"])
 @jwt_required()
 def profile():
 
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
+
+    user = User.query.get(current_user_id)
+
+    if not user:
+        return jsonify({
+            "error": "User not found"
+        }), 404
 
     return jsonify({
-        "message" : "Protected Route Accessed",
-        "user_id" : current_user_id
-    }),200
+        "id": user.id,
+        "username": user.username,
+        "email": user.email
+    }), 200

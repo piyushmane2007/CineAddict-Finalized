@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Default backend URL (Flask backend default port 5000)
-export const DEFAULT_BACKEND_URL = 'http://127.0.0.1:5000';
+export const DEFAULT_BACKEND_URL = 'https://cineaddict-backend.onrender.com';
 
 export const getBackendUrl = () => {
   return localStorage.getItem('cineaddict_backend_url') || DEFAULT_BACKEND_URL;
